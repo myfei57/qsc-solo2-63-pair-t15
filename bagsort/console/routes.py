@@ -120,7 +120,12 @@ def route_table() -> list[Route]:
         # -- belt ---------------------------------------------------------
         Route("GET", "/api/belt", "carousel and batch", "handle_belt_state"),
         Route("POST", "/api/belt/set", "set carousel and batch", "handle_belt_set"),
-        Route("POST", "/api/belt/switch", "clear then switch batch", "handle_belt_switch"),
+        Route("POST", "/api/belt/switch", "crash safe batch cut-over", "handle_belt_switch"),
+        Route("POST", "/api/belt/switch/resume", "finish an interrupted switch", "handle_belt_switch_resume"),
+        Route("POST", "/api/belt/switch/rollback", "undo an interrupted switch", "handle_belt_switch_rollback"),
+        Route("GET", "/api/belt/switch", "status of the open switch", "handle_belt_switch_status"),
+        Route("GET", "/api/belt/switch/reconcile", "cross-check the three ledgers", "handle_belt_switch_reconcile"),
+        Route("GET", "/api/belt/switch/{switch_id}", "status of one switch", "handle_belt_switch_status"),
         Route("POST", "/api/belt/rotate", "retire stale transfer commands", "handle_belt_rotate"),
         Route("POST", "/api/belt/place", "place a bag on the carousel", "handle_belt_place"),
         Route("POST", "/api/belt/place-batch", "place several bags", "handle_belt_place_batch"),

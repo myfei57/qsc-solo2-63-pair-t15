@@ -57,7 +57,7 @@ def test_row_helpers_project_the_records(plant, flight):
     plant.injector.push(plant.bag(bag.id), "T1-CHA")
     plant.belt.set("T1-CRCR1", 1)
     plant.belt.place(plant.bag(bag.id))
-    plant.belt.switch("T1-CRCR2", 2)
+    plant.switch_belt("T1-CRCR2", 2)
 
     audit_row = csv_export.audit_rows(plant.audit.entries())[0]
     assert set(csv_export.AUDIT_COLUMNS) <= set(audit_row)

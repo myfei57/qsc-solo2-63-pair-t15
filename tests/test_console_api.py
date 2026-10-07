@@ -178,6 +178,46 @@ def test_recheck_and_belt_endpoints(server):
     assert call(server, "POST", "/api/belt/rotate")[1]["dropped"] == 0
 
 
+def test_interrupted_switch_can_be_resumed_or_rolled_back_via_the_console(server):
+    flight_id = bootstrap(server)
+    plant = server.plant
+    call(server, "POST", "/api/bags/checkin", {"barcode": "4002", "flight_id": flight_id})
+    call(server, "POST", "/api/belt/set", {"carousel": "T1-CRCR1", "batch": 1})
+    call(server, "POST", "/api/belt/place", {"bag_id": "T1-4002"})
+    call(
+        server,
+        "POST",
+        "/api/belt/transfers",
+        {"flight_id": flight_id, "carousel": "T1-CRCR1", "batch": 1},
+    )
+    plant.switches.crash_after = "clear"
+    status, body = call(
+        server, "POST", "/api/belt/switch", {"carousel": "T1-CRCR2", "batch": 2}
+    )
+    assert status == 409
+    assert body["code"] == "switch_interrupted"
+    assert body["stranded_end"] == "new"
+    assert body["stranded_bags"] == ["T1-4002"]
+    switch_id = body["switch_id"]
+
+    status, status_body = call(server, "GET", "/api/belt/switch")
+    assert status == 200
+    assert status_body["switch_id"] == switch_id
+    assert status_body["resumable"] is True
+
+    reconcile = call(server, "GET", "/api/belt/switch/reconcile")[1]
+    assert reconcile["consistent"] is True
+    assert {item["switch_id"] for item in reconcile["open_switches"]} == {switch_id}
+
+    # Choose to undo: the old batch and its bags come back.
+    status, rolled = call(server, "POST", "/api/belt/switch/rollback", {})
+    assert status == 200
+    assert rolled["status"] == "rolled_back"
+    assert rolled["restored"] == 1
+    assert call(server, "GET", "/api/belt")[1]["carousel"] == "T1-CRCR1"
+    assert [bag["id"] for bag in call(server, "GET", "/api/belt/on-carousel")[1]] == ["T1-4002"]
+
+
 def test_quota_and_audit_endpoints(server):
     flight_id = bootstrap(server)
     assert call(server, "POST", "/api/quota", {"flight_id": flight_id, "limit": 2})[1]["limit"] == 2

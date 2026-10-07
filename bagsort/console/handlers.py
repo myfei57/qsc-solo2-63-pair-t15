@@ -570,8 +570,43 @@ def handle_belt_set(server, request: Request) -> Response:
 
 
 def handle_belt_switch(server, request: Request) -> Response:
-    cleared = _plant(server).switch_belt(request.required("carousel"), request.int_field("batch"))
-    return json_response({"cleared": cleared, **_plant(server).belt.describe()})
+    plant = _plant(server)
+    outcome = plant.switch_belt(request.required("carousel"), request.int_field("batch"))
+    return json_response(outcome.as_dict())
+
+
+def handle_belt_switch_resume(server, request: Request) -> Response:
+    plant = _plant(server)
+    switch_id = request.str_field("switch_id") or request.query_str("switch_id")
+    outcome = plant.resume_switch(switch_id)
+    return json_response(outcome.as_dict())
+
+
+def handle_belt_switch_rollback(server, request: Request) -> Response:
+    plant = _plant(server)
+    switch_id = request.str_field("switch_id") or request.query_str("switch_id")
+    outcome = plant.rollback_switch(switch_id)
+    return json_response(outcome.as_dict())
+
+
+def handle_belt_switch_status(server, request: Request) -> Response:
+    plant = _plant(server)
+    switch_id = request.param("switch_id") or request.query_str("switch_id")
+    return json_response(plant.switch_status(switch_id))
+
+
+def handle_belt_switch_reconcile(server, request: Request) -> Response:
+    plant = _plant(server)
+    problems = plant.switches.reconcile()
+    return json_response(
+        {
+            "consistent": not problems,
+            "problems": problems,
+            "open_switches": [
+                plant.switches.describe(record) for record in plant.switches.pending()
+            ],
+        }
+    )
 
 
 def handle_belt_rotate(server, request: Request) -> Response:

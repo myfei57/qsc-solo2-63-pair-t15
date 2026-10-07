@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from bagsort.audit.chain import AuditChain
 from bagsort.belt.belt import Belt
+from bagsort.belt.switching import SwitchCoordinator
 from bagsort.checkin.desk import Desk
 from bagsort.clock import Clock
 from bagsort.errors import ConflictError
@@ -66,6 +67,7 @@ class Plant:
     desk: Desk
     recheck: RecheckQueue
     belt: Belt
+    switches: SwitchCoordinator
     quota: QuotaBook
     audit: AuditChain
     report: PlantReport
@@ -116,9 +118,19 @@ class Plant:
             "flight.closed",
             "chute.assigned",
             "belt.switched",
+            "belt.switch_began",
+            "belt.switch_interrupted",
+            "belt.switch_resumed",
+            "belt.switch_rolled_back",
             "bag.remapped",
         ):
             bus.subscribe(topic, audit_subscriber)
+
+        def _switch_event(phase: str, **payload) -> None:
+            topic = "belt.switched" if phase == "committed" else f"belt.switch_{phase}"
+            bus.publish(topic, **payload)
+
+        switches = SwitchCoordinator(store, belt, clock, listener=_switch_event)
 
         report = PlantReport(
             store, book, chutes, belt, quota, audit, namespace, handling_line()
@@ -144,6 +156,7 @@ class Plant:
             desk=desk,
             recheck=recheck,
             belt=belt,
+            switches=switches,
             quota=quota,
             audit=audit,
             report=report,
@@ -229,10 +242,36 @@ class Plant:
     def process_recheck(self) -> Bag | None:
         return self.recheck.dequeue()
 
-    def switch_belt(self, carousel: str, batch: int) -> int:
-        cleared = self.belt.switch(carousel, batch)
-        self.bus.publish("belt.switched", carousel=carousel, batch=batch)
-        return cleared
+    def switch_belt(self, carousel: str, batch: int):
+        """Begin a crash safe batch switch.
+
+        The saga publishes its own phase events (began/interrupted/switched);
+        a midpoint stop raises 409 with the switch id and the stranded side.
+        """
+
+        return self.switches.begin(carousel, batch)
+
+    def resume_switch(self, switch_id: str = ""):
+        """Finish an interrupted switch by replaying only its missing steps."""
+
+        target = self.switches.get(switch_id) if switch_id else self.switches.active()
+        outcome = self.switches.resume(target.id if target else "")
+        return outcome
+
+    def rollback_switch(self, switch_id: str = ""):
+        """Undo an interrupted switch back to the pre-switch batch."""
+
+        return self.switches.rollback(switch_id)
+
+    def switch_status(self, switch_id: str = ""):
+        record = (
+            self.switches.get(switch_id)
+            if switch_id
+            else self.switches.active()
+        )
+        if record is None:
+            raise ConflictError("no batch switch to report")
+        return self.switches.describe(record)
 
     def rotate_belt(self) -> int:
         return self.belt.rotate()
@@ -244,7 +283,9 @@ class Plant:
         return self.quota.set_limit(flight_id, limit)
 
     def verify(self) -> bool:
-        return self.audit.verify()
+        """Healthy means the audit chain links up *and* the switch ledgers agree."""
+
+        return self.audit.verify() and self.switches.consistent()
 
 
 class _AuditSubscriber:
@@ -258,6 +299,10 @@ class _AuditSubscriber:
         "flight.closed": ("flight_close", "audit"),
         "chute.assigned": ("chute_assign", "chute"),
         "belt.switched": ("belt_switch", "belt"),
+        "belt.switch_began": ("belt_switch", "belt"),
+        "belt.switch_interrupted": ("belt_switch", "belt"),
+        "belt.switch_resumed": ("belt_switch", "belt"),
+        "belt.switch_rolled_back": ("belt_switch_rollback", "belt"),
         "bag.remapped": ("remap", "checkin"),
     }
 
@@ -270,7 +315,8 @@ class _AuditSubscriber:
             raise ConflictError(f"no audit mapping for topic {event.topic!r}")
         kind, stage = mapping
         subject = str(
-            event.payload.get("bag_id")
+            event.payload.get("switch_id")
+            or event.payload.get("bag_id")
             or event.payload.get("flight_id")
             or event.payload.get("carousel")
             or ""
@@ -278,6 +324,6 @@ class _AuditSubscriber:
         detail = {
             key: value
             for key, value in event.payload.items()
-            if key not in {"bag_id", "flight_id"}
+            if key not in {"bag_id", "flight_id", "switch_id"}
         }
         self._audit.record(kind, subject, stage, detail)

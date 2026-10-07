@@ -48,7 +48,8 @@ def run_demo(plant: "Plant", cycles: int = 6) -> dict[str, object]:
         plant.belt.place(bag)
     on_carousel = len(plant.belt.on_carousel())
     transfer = plant.append_transfer(flight.id, carousel, 1)
-    cleared = plant.switch_belt(carousel, 1)
+    switch = plant.switch_belt(carousel, 1)
+    cleared = switch.cleared
     replayed = len(plant.belt.replay_transfers())
 
     closed = plant.close_flight(flight.id)

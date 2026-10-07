@@ -219,6 +219,7 @@ class LoadRecord:
     carousel: str
     batch: int
     at: str
+    switch_id: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -226,6 +227,7 @@ class LoadRecord:
             "carousel": self.carousel,
             "batch": self.batch,
             "at": self.at,
+            "switch_id": self.switch_id,
         }
 
     @classmethod
@@ -235,6 +237,7 @@ class LoadRecord:
             carousel=str(raw.get("carousel", "")),
             batch=int(raw.get("batch", 0)),
             at=str(raw.get("at", "")),
+            switch_id=str(raw.get("switch_id", "")),
         )
 
 
@@ -283,3 +286,105 @@ class AuditEntry:
             digest=str(raw.get("digest", "")),
             at=str(raw.get("at", "")),
         )
+
+
+#: Lifecycle of a batch switch saga.
+SWITCH_RUNNING = "running"
+SWITCH_COMMITTED = "committed"
+SWITCH_ROLLING_BACK = "rolling_back"
+SWITCH_ROLLED_BACK = "rolled_back"
+SWITCH_FAILED = "failed"
+
+#: Ordered steps of the forward cut-over; rollback compensations run in reverse.
+SWITCH_STEPS: tuple[str, ...] = ("clear", "announce", "retire", "finish")
+
+
+@dataclass(frozen=True)
+class SwitchRecord:
+    """One batch switch saga: the switch record the journal and batch state cross-check.
+
+    Every step commits its effects and its marker in a single journal
+    transaction, so a restart can ask "which markers are committed?" and be
+    certain the matching effects are too. Rollback appends compensation
+    commands rather than deleting history, and each compensation is marked the
+    same way.
+    """
+
+    id: str
+    carousel: str
+    batch: int
+    from_carousel: str = ""
+    from_batch: int = 0
+    status: str = SWITCH_RUNNING
+    started_at: str = ""
+    finished_at: str = ""
+    #: Forward steps that committed; order follows ``SWITCH_STEPS``.
+    steps_done: list[str] = field(default_factory=list)
+    #: Rollback compensations that committed (rb_<step>).
+    rollback_done: list[str] = field(default_factory=list)
+    #: Bag ids riding the old carousel when the switch began.
+    bag_ids: list[str] = field(default_factory=list)
+    #: Bag state each bag had before ``clear`` marked it loaded.
+    prior_bag_states: dict[str, str] = field(default_factory=dict)
+    #: Transfer commands retired by ``retire`` (restored on rollback).
+    retired_commands: list[dict[str, Any]] = field(default_factory=list)
+    cleared: int = 0
+    failure: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "carousel": self.carousel,
+            "batch": self.batch,
+            "from_carousel": self.from_carousel,
+            "from_batch": self.from_batch,
+            "status": self.status,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "steps_done": list(self.steps_done),
+            "rollback_done": list(self.rollback_done),
+            "bag_ids": list(self.bag_ids),
+            "prior_bag_states": dict(sorted(self.prior_bag_states.items())),
+            "retired_commands": list(self.retired_commands),
+            "cleared": self.cleared,
+            "failure": self.failure,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "SwitchRecord":
+        return cls(
+            id=str(raw["id"]),
+            carousel=str(raw.get("carousel", "")),
+            batch=int(raw.get("batch", 0)),
+            from_carousel=str(raw.get("from_carousel", "")),
+            from_batch=int(raw.get("from_batch", 0)),
+            status=str(raw.get("status", SWITCH_RUNNING)),
+            started_at=str(raw.get("started_at", "")),
+            finished_at=str(raw.get("finished_at", "")),
+            steps_done=[str(item) for item in raw.get("steps_done", [])],
+            rollback_done=[str(item) for item in raw.get("rollback_done", [])],
+            bag_ids=[str(item) for item in raw.get("bag_ids", [])],
+            prior_bag_states={
+                str(key): str(value) for key, value in raw.get("prior_bag_states", {}).items()
+            },
+            retired_commands=[dict(item) for item in raw.get("retired_commands", [])],
+            cleared=int(raw.get("cleared", 0)),
+            failure=str(raw.get("failure", "")),
+        )
+
+    def evolved(self, **changes: Any) -> "SwitchRecord":
+        current = {
+            "steps_done": list(self.steps_done),
+            "rollback_done": list(self.rollback_done),
+            "bag_ids": list(self.bag_ids),
+            "prior_bag_states": dict(self.prior_bag_states),
+            "retired_commands": list(self.retired_commands),
+        }
+        current.update(changes)
+        return replace(self, **current)
+
+    def has_step(self, step: str) -> bool:
+        return step in self.steps_done
+
+    def has_rollback(self, step: str) -> bool:
+        return f"rb_{step}" in self.rollback_done

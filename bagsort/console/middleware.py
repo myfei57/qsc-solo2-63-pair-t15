@@ -11,9 +11,10 @@ from bagsort.errors import (
     OrderingError,
     QuotaError,
     StaleError,
+    SwitchInterrupted,
     ValidationError,
 )
-from .http import RequestError, Response, error_response
+from .http import RequestError, Response, error_response, json_response
 
 LOGGER = logging.getLogger("bagsort.console")
 
@@ -37,6 +38,10 @@ def guarded(call: Callable[[], Response]) -> Response:
 
     try:
         return call()
+    except SwitchInterrupted as exc:
+        # The switch id and the stranded side let the operator choose resume
+        # or rollback straight from the response, without a second lookup.
+        return json_response(exc.as_dict(), status=409)
     except Exception as exc:  # noqa: BLE001 - the console reports every failure
         status = status_for(exc)
         if status >= 500:

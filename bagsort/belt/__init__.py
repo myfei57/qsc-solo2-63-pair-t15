@@ -3,5 +3,6 @@
 from __future__ import annotations
 
 from .belt import Belt
+from .switching import InjectedFault, SwitchCoordinator, SwitchOutcome
 
-__all__ = ["Belt"]
+__all__ = ["Belt", "InjectedFault", "SwitchCoordinator", "SwitchOutcome"]

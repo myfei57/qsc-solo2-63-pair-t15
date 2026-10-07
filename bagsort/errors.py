@@ -46,3 +46,17 @@ class QuotaError(ControlError):
     """A quota or capacity bound rejected the request."""
 
     code = "quota_exceeded"
+
+
+class SwitchInterrupted(ConflictError):
+    """A batch switch stopped partway and is waiting for resume or rollback."""
+
+    code = "switch_interrupted"
+
+    def __init__(self, message: str, switch_id: str = "", **context: object) -> None:
+        super().__init__(message)
+        self.switch_id = switch_id
+        self.context = context
+
+    def as_dict(self) -> dict[str, object]:
+        return {**super().as_dict(), "switch_id": self.switch_id, **self.context}
