@@ -10,7 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from bagsort.audit.chain import AuditChain
-from bagsort.belt.belt import Belt
+from bagsort.belt.belt import CONTINUE, ROLLBACK, Belt
+from bagsort.errors import SwitchInterrupted
 from bagsort.checkin.desk import Desk
 from bagsort.clock import Clock
 from bagsort.errors import ConflictError
@@ -116,6 +117,9 @@ class Plant:
             "flight.closed",
             "chute.assigned",
             "belt.switched",
+            "belt.switch_failed",
+            "belt.switch_resumed",
+            "belt.switch_rolled_back",
             "bag.remapped",
         ):
             bus.subscribe(topic, audit_subscriber)
@@ -229,10 +233,84 @@ class Plant:
     def process_recheck(self) -> Bag | None:
         return self.recheck.dequeue()
 
-    def switch_belt(self, carousel: str, batch: int) -> int:
-        cleared = self.belt.switch(carousel, batch)
-        self.bus.publish("belt.switched", carousel=carousel, batch=batch)
-        return cleared
+    def switch_belt(self, carousel: str, batch: int, crash_after: int | None = None):
+        """Start a crash-safe batch switch.
+
+        With no injected fault it runs to completion and returns the cleared
+        count (the legacy contract). ``crash_after`` strands the switch after a
+        committed step for drills; the plan is then recovered with
+        :meth:`active_switch` and settled with :meth:`resume_switch`.
+        """
+
+        try:
+            plan = self.belt.begin_switch(carousel, batch, fail_after=crash_after)
+        except SwitchInterrupted as interrupted:
+            self.bus.publish(
+                "belt.switch_failed",
+                switch_id=interrupted.switch_id,
+                carousel=carousel,
+                batch=batch,
+                steps_done=interrupted.steps_done,
+            )
+            raise
+        self.bus.publish(
+            "belt.switched",
+            switch_id=plan.id,
+            carousel=carousel,
+            batch=batch,
+            cleared=len(plan.cleared),
+        )
+        return len(plan.cleared)
+
+    def active_switch(self):
+        """The batch switch stranded mid-flight, if restart left one."""
+
+        return self.belt.active_switch()
+
+    def switch_decision(self) -> dict[str, object]:
+        """Read-only preview of what continue and rollback each cost."""
+
+        return self.belt.switch_decision()
+
+    def resume_switch(self, decision: str):
+        """Settle a stranded switch: finish the new batch or restore the old one."""
+
+        plan = self.belt.resume_switch(decision)
+        if decision.strip().lower() == CONTINUE:
+            self.bus.publish(
+                "belt.switch_resumed",
+                switch_id=plan.id,
+                carousel=plan.to_carousel,
+                batch=plan.to_batch,
+                cleared=len(plan.cleared),
+            )
+            self.bus.publish(
+                "belt.switched",
+                switch_id=plan.id,
+                carousel=plan.to_carousel,
+                batch=plan.to_batch,
+                cleared=len(plan.cleared),
+            )
+        elif decision.strip().lower() == ROLLBACK:
+            self.bus.publish(
+                "belt.switch_rolled_back",
+                switch_id=plan.id,
+                carousel=plan.from_carousel,
+                batch=plan.from_batch,
+                restored=len(plan.restored),
+            )
+        return plan
+
+    def switch_records(self):
+        return self.belt.switch_records()
+
+    def reconcile_belt(self) -> dict[str, object]:
+        """Cross-check switch records, the journal, belt state and the audit chain."""
+
+        report = self.belt.reconcile()
+        report["audit_intact"] = self.audit.verify()
+        report["ok"] = bool(report["ok"]) and bool(report["audit_intact"])
+        return report
 
     def rotate_belt(self) -> int:
         return self.belt.rotate()
@@ -258,6 +336,9 @@ class _AuditSubscriber:
         "flight.closed": ("flight_close", "audit"),
         "chute.assigned": ("chute_assign", "chute"),
         "belt.switched": ("belt_switch", "belt"),
+        "belt.switch_failed": ("belt_switch_failed", "belt"),
+        "belt.switch_resumed": ("belt_switch_resumed", "belt"),
+        "belt.switch_rolled_back": ("belt_switch_rolled_back", "belt"),
         "bag.remapped": ("remap", "checkin"),
     }
 
@@ -270,7 +351,8 @@ class _AuditSubscriber:
             raise ConflictError(f"no audit mapping for topic {event.topic!r}")
         kind, stage = mapping
         subject = str(
-            event.payload.get("bag_id")
+            event.payload.get("switch_id")
+            or event.payload.get("bag_id")
             or event.payload.get("flight_id")
             or event.payload.get("carousel")
             or ""

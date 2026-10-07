@@ -11,6 +11,7 @@ from bagsort.errors import (
     OrderingError,
     QuotaError,
     StaleError,
+    SwitchInterrupted,
     ValidationError,
 )
 from .http import RequestError, Response, error_response
@@ -27,7 +28,7 @@ def status_for(exc: Exception) -> int:
         return 404
     if isinstance(exc, ValidationError):
         return 400
-    if isinstance(exc, (ConflictError, OrderingError, StaleError, QuotaError)):
+    if isinstance(exc, (ConflictError, OrderingError, StaleError, QuotaError, SwitchInterrupted)):
         return 409
     return 500
 

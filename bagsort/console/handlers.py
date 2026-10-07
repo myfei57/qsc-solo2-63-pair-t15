@@ -561,7 +561,8 @@ def handle_recheck_clear(server, request: Request) -> Response:
 
 
 def handle_belt_state(server, request: Request) -> Response:
-    return json_response(_plant(server).belt.describe())
+    belt = _plant(server).belt
+    return json_response({**belt.describe(), **belt.switch_status()})
 
 
 def handle_belt_set(server, request: Request) -> Response:
@@ -570,8 +571,42 @@ def handle_belt_set(server, request: Request) -> Response:
 
 
 def handle_belt_switch(server, request: Request) -> Response:
-    cleared = _plant(server).switch_belt(request.required("carousel"), request.int_field("batch"))
+    crash_after = request.int_field("crash_after", -999)
+    kwargs = {"crash_after": crash_after} if crash_after != -999 else {}
+    cleared = _plant(server).switch_belt(
+        request.required("carousel"), request.int_field("batch"), **kwargs
+    )
     return json_response({"cleared": cleared, **_plant(server).belt.describe()})
+
+
+def handle_belt_switch_active(server, request: Request) -> Response:
+    plan = _plant(server).active_switch()
+    if plan is None:
+        return json_response({"in_progress": False})
+    return json_response({"in_progress": True, **plan.as_dict()})
+
+
+def handle_belt_switch_decision(server, request: Request) -> Response:
+    return json_response(_plant(server).switch_decision())
+
+
+def handle_belt_switch_records(server, request: Request) -> Response:
+    return json_response([plan.as_dict() for plan in _plant(server).switch_records()])
+
+
+def handle_belt_switch_get(server, request: Request) -> Response:
+    plan = _plant(server).belt.get_switch(request.param("id"))
+    return json_response(plan.as_dict())
+
+
+def handle_belt_switch_resume(server, request: Request) -> Response:
+    plant = _plant(server)
+    plan = plant.resume_switch(request.required("decision"))
+    return json_response({"settled": True, **plant.reconcile_belt(), "switch": plan.as_dict()})
+
+
+def handle_belt_switch_reconcile(server, request: Request) -> Response:
+    return json_response(_plant(server).reconcile_belt())
 
 
 def handle_belt_rotate(server, request: Request) -> Response:

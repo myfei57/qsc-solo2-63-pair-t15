@@ -52,6 +52,16 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("status", help="print the store status")
     commands.add_parser("export", help="print audit and sort records as CSV")
 
+    commands.add_parser("switch-status", help="show a batch switch stranded mid-flight")
+    commands.add_parser("switch-decision", help="show what continuing or rolling back costs")
+    resume = commands.add_parser("switch-resume", help="settle a stranded batch switch")
+    resume.add_argument(
+        "decision",
+        choices=("continue", "rollback"),
+        help="finish the new batch or restore the old one",
+    )
+    resume.add_argument("--persist", action="store_true", help="write a snapshot afterwards")
+
     seed = commands.add_parser("seed", help="seed default lanes and flights")
     seed.add_argument("--persist", action="store_true", help="write a snapshot afterwards")
 
@@ -134,6 +144,36 @@ def _command_reset(store: Store, plant: Plant, args: argparse.Namespace) -> int:
     return 0
 
 
+def _command_switch_status(plant: Plant) -> int:
+    plan = plant.active_switch()
+    if plan is None:
+        print(json.dumps({"in_progress": False}, sort_keys=True))
+        return 0
+    print(json.dumps({"in_progress": True, **plan.as_dict()}, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
+
+
+def _command_switch_decision(plant: Plant) -> int:
+    print(json.dumps(plant.switch_decision(), ensure_ascii=False, indent=2, sort_keys=True))
+    return 0 if plant.active_switch() is not None else 1
+
+
+def _command_switch_resume(store: Store, plant: Plant, args: argparse.Namespace) -> int:
+    plan = plant.resume_switch(args.decision)
+    if args.persist:
+        store.persist()
+    report = plant.reconcile_belt()
+    print(
+        json.dumps(
+            {"switch": plan.as_dict(), "reconcile": report},
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if report["ok"] else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -163,5 +203,11 @@ def main(argv: list[str] | None = None) -> int:
         return _command_seed(store, plant, args)
     if args.command == "reset":
         return _command_reset(store, plant, args)
+    if args.command == "switch-status":
+        return _command_switch_status(plant)
+    if args.command == "switch-decision":
+        return _command_switch_decision(plant)
+    if args.command == "switch-resume":
+        return _command_switch_resume(store, plant, args)
     parser.error(f"unknown command {args.command!r}")
     return 2

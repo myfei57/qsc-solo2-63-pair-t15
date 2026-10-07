@@ -18,6 +18,7 @@ from .entities import (
     LoadRecord,
     Sequence,
     SortRecord,
+    SwitchPlan,
     TransferCommand,
 )
 from bagsort.errors import ValidationError
@@ -34,6 +35,7 @@ class State:
     sort_records: list[SortRecord] = field(default_factory=list)
     transfer_commands: list[TransferCommand] = field(default_factory=list)
     load_records: list[LoadRecord] = field(default_factory=list)
+    switches: list[SwitchPlan] = field(default_factory=list)
     audit: list[AuditEntry] = field(default_factory=list)
     quota_limits: dict[str, int] = field(default_factory=dict)
     counters: dict[str, int] = field(default_factory=dict)
@@ -52,6 +54,7 @@ class State:
             sort_records=list(self.sort_records),
             transfer_commands=list(self.transfer_commands),
             load_records=list(self.load_records),
+            switches=list(self.switches),
             audit=list(self.audit),
             quota_limits=dict(self.quota_limits),
             counters=dict(self.counters),
@@ -73,6 +76,7 @@ class State:
             "sort_records": [record.as_dict() for record in self.sort_records],
             "transfer_commands": [command.as_dict() for command in self.transfer_commands],
             "load_records": [record.as_dict() for record in self.load_records],
+            "switches": [plan.as_dict() for plan in self.switches],
             "audit": [entry.as_dict() for entry in self.audit],
             "quota_limits": dict(sorted(self.quota_limits.items())),
             "counters": dict(sorted(self.counters.items())),
@@ -122,6 +126,43 @@ def apply_entry(state: State, kind: str, payload: dict[str, Any]) -> None:
         ]
     elif kind == "load.append":
         state.load_records.append(LoadRecord.from_dict(payload["record"]))
+    elif kind == "load.remove_many":
+        doomed = {str(item) for item in payload.get("bag_ids", [])}
+        carousel = str(payload.get("carousel", ""))
+        batch = payload.get("batch", None)
+        survivors = []
+        for record in state.load_records:
+            matched = record.bag_id in doomed and (
+                not carousel or record.carousel == carousel
+            )
+            if batch is not None:
+                matched = matched and record.batch == int(batch)
+            if not matched:
+                survivors.append(record)
+        state.load_records = survivors
+    elif kind == "switch.begin":
+        state.switches.append(SwitchPlan.from_dict(payload["plan"]))
+    elif kind == "switch.update":
+        plan = SwitchPlan.from_dict(payload["plan"])
+        for index, existing in enumerate(state.switches):
+            if existing.id == plan.id:
+                state.switches[index] = plan
+                break
+        else:
+            state.switches.append(plan)
+    elif kind == "transfer.restore":
+        restored = [TransferCommand.from_dict(item) for item in payload.get("commands", [])]
+        known = {command.id for command in state.transfer_commands}
+        state.transfer_commands.extend(
+            command for command in restored if command.id not in known
+        )
+    elif kind == "counter.set":
+        name = str(payload["name"])
+        state.counters[name] = int(payload["value"])
+    elif kind == "belt.restore":
+        state.belt_on_carousel = [str(item) for item in payload.get("on_carousel", [])]
+        state.belt_carousel = str(payload.get("carousel", state.belt_carousel))
+        state.belt_batch = int(payload.get("batch", state.belt_batch))
     elif kind == "audit.append":
         state.audit.append(AuditEntry.from_dict(payload["entry"]))
     elif kind == "quota.set":

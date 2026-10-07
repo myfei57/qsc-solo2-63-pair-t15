@@ -239,6 +239,110 @@ class LoadRecord:
 
 
 @dataclass(frozen=True)
+class ClearedBag:
+    """One bag swept off the old batch while a switch is in flight.
+
+    ``prior_state`` and ``prior_on_carousel`` are the snapshot needed to undo
+    the sweep, which is what lets a rollback restore the old batch exactly.
+    """
+
+    bag_id: str
+    prior_state: str
+    prior_on_carousel: bool = True
+    at: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "bag_id": self.bag_id,
+            "prior_state": self.prior_state,
+            "prior_on_carousel": self.prior_on_carousel,
+            "at": self.at,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "ClearedBag":
+        return cls(
+            bag_id=str(raw["bag_id"]),
+            prior_state=str(raw.get("prior_state", "")),
+            prior_on_carousel=bool(raw.get("prior_on_carousel", True)),
+            at=str(raw.get("at", "")),
+        )
+
+
+@dataclass(frozen=True)
+class SwitchPlan:
+    """One carousel batch switch, recorded before its first effect and closed out.
+
+    The switch runs in three crash-safe steps. ``steps_done`` is the number that
+    have committed atomically (each commit carries both the physical effect and
+    this plan's progress), so restart by replay leaves the switch exactly where
+    it fell. A finished switch is ``completed`` (continue) or ``rolled_back``;
+    only ``in_progress`` plans can be resumed.
+
+    Steps: 0 = old batch swept, 1 = new batch announced, 2 = old commands retired.
+    """
+
+    id: str
+    from_carousel: str
+    from_batch: int
+    to_carousel: str
+    to_batch: int
+    status: str
+    steps_done: int = 0
+    cleared: tuple[ClearedBag, ...] = field(default_factory=tuple)
+    restored: tuple[str, ...] = field(default_factory=tuple)
+    retired_transfers: tuple[TransferCommand, ...] = field(default_factory=tuple)
+    on_carousel_snapshot: tuple[str, ...] = field(default_factory=tuple)
+    decision: str = ""
+    began_at: str = ""
+    finished_at: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "from_carousel": self.from_carousel,
+            "from_batch": self.from_batch,
+            "to_carousel": self.to_carousel,
+            "to_batch": self.to_batch,
+            "status": self.status,
+            "steps_done": self.steps_done,
+            "cleared": [item.as_dict() for item in self.cleared],
+            "restored": list(self.restored),
+            "retired_transfers": [command.as_dict() for command in self.retired_transfers],
+            "on_carousel_snapshot": list(self.on_carousel_snapshot),
+            "decision": self.decision,
+            "began_at": self.began_at,
+            "finished_at": self.finished_at,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "SwitchPlan":
+        return cls(
+            id=str(raw["id"]),
+            from_carousel=str(raw.get("from_carousel", "")),
+            from_batch=int(raw.get("from_batch", 0)),
+            to_carousel=str(raw.get("to_carousel", "")),
+            to_batch=int(raw.get("to_batch", 0)),
+            status=str(raw.get("status", "in_progress")),
+            steps_done=int(raw.get("steps_done", 0)),
+            cleared=tuple(ClearedBag.from_dict(item) for item in raw.get("cleared", [])),
+            restored=tuple(str(item) for item in raw.get("restored", [])),
+            retired_transfers=tuple(
+                TransferCommand.from_dict(item) for item in raw.get("retired_transfers", [])
+            ),
+            on_carousel_snapshot=tuple(
+                str(item) for item in raw.get("on_carousel_snapshot", [])
+            ),
+            decision=str(raw.get("decision", "")),
+            began_at=str(raw.get("began_at", "")),
+            finished_at=str(raw.get("finished_at", "")),
+        )
+
+    def evolved(self, **changes: Any) -> "SwitchPlan":
+        return replace(self, **changes)
+
+
+@dataclass(frozen=True)
 class Sequence:
     epoch: int = 0
     next_value: int = 0
